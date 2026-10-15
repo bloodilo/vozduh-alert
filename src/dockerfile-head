@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# воздух-алерт.рф — карта тревог БПЛА по каналу t.me/vrv_radar.
+# Всё в одном контейнере: nginx (статика+микрокэш+TLS) + redis (active.json в памяти)
+#                         + parser (цикл 60с) + api (aiohttp).
+# Требуется BuildKit (docker 23+, либо DOCKER_BUILDKIT=1 при docker 20.10+).
+# Сборка:  docker build -t vozduh-alert .
+# Запуск:  см. docker-compose.yml (порты 80+443, волюмы ./data, ./certs, ./acme).
+#   TLS: nginx внутри слушает 443; серты кладутся в волюм /certs
+#   (fullchain.pem + privkey.pem), без них старт с самоподписанным.
+#   80-й отдаёт ACME-webroot из /acme и редиректит на https.
+#   env TME_PROXY — прокся для чтения t.me, если из ДЦ он недоступен:
+#       http://user:pass@host:port | socks5://... | socks5h://... (рекомендуется).
+#       Через проксю ходит только t.me, Nominatim — напрямую.
+FROM python:3.12-alpine
+
+RUN apk add --no-cache nginx redis openssl \
+ && pip install --no-cache-dir aiohttp redis "requests[socks]"
+
+# Leaflet 1.9.4 самохостом и иконка БПЛА (качаются при сборке)
+RUN mkdir -p /www/vendor/leaflet/images /www/regions /data /acme /certs \
+ && cd /www/vendor/leaflet \
+ && wget -q https://unpkg.com/leaflet@1.9.4/dist/leaflet.css \
+            https://unpkg.com/leaflet@1.9.4/dist/leaflet.js \
+ && cd images \
+ && for f in marker-icon.png marker-icon-2x.png marker-shadow.png layers.png layers-2x.png; do \
+      wget -q https://unpkg.com/leaflet@1.9.4/dist/images/$f; done \
+ && wget -q -O /www/free-icon-uav-8598680.png \
+      https://cdn-icons-png.flaticon.com/512/8598/8598680.png \
+ && wget -q -O /www/vendor/protomaps-leaflet.js \
+      https://unpkg.com/protomaps-leaflet@5.1.0/dist/protomaps-leaflet.js
+# Подложка — свои векторные тайлы (см. basemap.pmtiles в docker-compose:
+# файл большой, в образ не зашивается, монтируется волюмом)
+
+COPY <<'HTMLEOF' /www/index.html

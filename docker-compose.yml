@@ -1,0 +1,29 @@
+# воздух-алерт.рф: docker compose up -d --build
+# Требуется BuildKit (docker 23+; на старых: DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1).
+#
+# TLS терминируется в контейнере: положите в ./certs файлы fullchain.pem и
+# privkey.pem (Let's Encrypt: certbot certonly --webroot -w ./acme -d xn----8sbeihi5atyufy.xn--p1ai,
+# затем скопируйте/слинкуйте live-файлы в ./certs). Пока сертов нет, контейнер
+# поднимет самоподписанный. После обновления серта:
+#   docker exec vozduh-alert nginx -s reload
+# В ./data копятся состояние парсера и кэши геокодинга.
+services:
+  vozduh-alert:
+    build: .
+    container_name: vozduh-alert
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./data:/data
+      - ./data/regions:/www/regions   # контуры областей/районов — переживают пересоздание
+      - ./basemap.pmtiles:/www/basemap.pmtiles:ro  # векторная подложка (~2-4 ГБ, скопировать на VPS отдельно, в образ не входит)
+      - ./certs:/certs:ro
+      - ./acme:/acme:ro
+    environment:
+      # t.me из ДЦ недоступен — прокся с BasicAuth; впишите host:port.
+      # Форматы: http://user:pass@host:port | socks5://... | socks5h://...
+      # (socks5h — DNS тоже через проксю, рекомендуется, если прокся socks).
+      # Через проксю ходит ТОЛЬКО t.me, геокодер Nominatim — напрямую.
+      TME_PROXY: "http://user:pass@CHANGE_ME:3128"

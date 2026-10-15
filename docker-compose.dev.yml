@@ -1,0 +1,23 @@
+# Локальная разработка: docker compose -f docker-compose.dev.yml up -d --build
+# Исходники из src/ смонтированы поверх образа:
+#   index.html        — правки видны сразу (F5 в браузере)
+#   nginx.conf        — после: docker exec vozduh-alert-dev nginx -s reload
+#   app.py, parser_loop.py — после: docker compose -f docker-compose.dev.yml restart
+# Релиз для VPS: sh assemble.sh → свежий Dockerfile (+ docker-compose.yml).
+# t.me из домашней сети доступен напрямую (выход через DE) — прокся не нужна.
+services:
+  vozduh-alert:
+    build: .
+    container_name: vozduh-alert-dev
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./src/index.html:/www/index.html:ro
+      - ./src/protomaps-leaflet.js:/www/vendor/protomaps-leaflet.js:ro
+      - ./basemap.pmtiles:/www/basemap.pmtiles:ro
+      - ./src/nginx.dev.conf:/etc/nginx/http.d/default.conf:ro
+      - ./src/app.py:/app.py:ro
+      - ./src/parser_loop.py:/parser_loop.py:ro
+      - ./data:/data
+      - ./data/regions:/www/regions

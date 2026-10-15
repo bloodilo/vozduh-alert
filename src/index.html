@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Радар ВРВ — карта тревог</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<style>
+  html, body { margin: 0; height: 100%; }
+  #map { height: 100%; }
+  .panel {
+    position: absolute; top: 12px; right: 12px; z-index: 1000;
+    background: rgba(255,255,255,.93); border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25);
+    padding: 12px 16px; font: 14px/1.45 system-ui, sans-serif;
+    max-width: 260px; max-height: calc(100vh - 24px); overflow-y: auto;
+    box-sizing: border-box;
+  }
+  .panel h1 { margin: 0 0 6px; font-size: 16px; }
+  .panel .meta { color: #666; font-size: 12px; margin-bottom: 8px; }
+  .panel ul { margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid #ddd; list-style: none; }
+  .panel li { margin: 2px 0; }
+  .panel summary { cursor: pointer; }
+  .panel summary:hover { color: #000; }
+  .panel details .det { color: #555; font-size: 12px; padding: 2px 0 4px 16px; }
+  .panel details.dim > summary { opacity: .4; }
+  .panel .rgroup > summary { font-weight: 600; }
+  .panel .sub { list-style: none; margin: 0; padding: 0 0 2px 16px; border-top: none; }
+  .panel .empty { color: #888; font-style: italic; }
+  .legend { margin: 8px 0 6px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 12px; }
+  .legend div { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .legend b { margin-left: auto; padding-left: 8px; align-self: center; }
+  .legend .lbl { line-height: 1.25; }
+  .legend .sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+  .legend .sw.region { background: rgba(255,149,0,.35); border: 1.5px solid #c25e00; }
+  .legend .sw.district { background: rgba(255,59,48,.45); border: 1.5px solid #d40000; }
+  .legend .sw.fixzone { background: rgba(255,59,48,.12); border: 1.5px dashed #d40000; }
+  .legend .sw.drone { background: none; border: none; display: flex; align-items: center; justify-content: center; }
+  .legend .sw.drone img { width: 16px; height: 16px; }
+  .legend .sw.stale { background: none; border: none; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+  .staleic { cursor: help; }
+  .drone-div { background: none; border: none; }
+  .drones { display: flex; align-items: center; }
+  .drones img { width: 26px; height: 26px;
+    filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+  .drones img + img { margin-left: -18px; } /* колода: каждая следующая поверх, хвосты слева */
+  .drones .more { font: bold 12px system-ui, sans-serif; color: #1a1a1a;
+    text-shadow: 0 0 2px #fff, 0 0 2px #fff; margin-right: 3px; }
+
+  /* бегущая строка событий */
+  #ticker { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1000;
+    display: flex; align-items: center; height: 30px;
+    background: rgba(255,255,255,.93); border-top: 1px solid #ddd;
+    font: 12px/30px system-ui, sans-serif; }
+  #followBtn { flex: none; border: none; background: none; color: #666;
+    padding: 0 10px; cursor: pointer; height: 100%; display: flex; align-items: center; }
+  #followBtn.on { color: #1a73e8; background: #cfe1ff; box-shadow: inset 0 -2px 0 #1a73e8; }
+  html.dark #followBtn { color: #9a9aa0; }
+  html.dark #followBtn.on { color: #cfe1ff; background: #44608f; box-shadow: inset 0 -2px 0 #8ab4f8; }
+  .tickwrap { flex: 1; overflow: hidden; }
+  #tick { display: inline-flex; white-space: nowrap;
+    animation: tickmove 60s linear infinite; }
+  .tickitem { padding-right: 70px; }
+  .tickwrap:hover #tick { animation-play-state: paused; }
+  @keyframes tickmove { to { transform: translateX(-50%); } }
+  #themeBtn { flex: none; border: none; background: none; font-size: 15px;
+    padding: 0 10px; cursor: pointer; height: 100%; }
+  .leaflet-bottom { bottom: 30px; }
+
+  /* отбои в панели */
+  .panel .clearedgrp > summary { font-weight: 600; color: #2e7d32; }
+  .panel .clearedit { color: #2e7d32; font-size: 12px; margin: 2px 0; cursor: pointer; }
+  .panel .clearedit:hover { color: #1b5e20; }
+
+  /* мобилка: панель в нижний левый угол, компактнее */
+  @media (max-width: 640px) {
+    .panel {
+      top: auto; right: auto; bottom: 42px; left: 12px;
+      max-width: min(80vw, 300px); max-height: 46vh;
+      font-size: 13px; padding: 10px 12px;
+    }
+  }
+
+  /* тёмная тема: класс html.dark; при загрузке берётся из localStorage
+     или системной настройки, переключается кнопкой 🌓 */
+  html.dark .leaflet-container { background: #111; }
+  html.dark .leaflet-container .leaflet-control-attribution { background: rgba(28,28,30,.8); color: #9a9aa0; }
+  html.dark .leaflet-control-attribution a { color: #8ab4f8; }
+  html.dark .leaflet-popup-content-wrapper, html.dark .leaflet-popup-tip { background: #232326; color: #e4e4e6; }
+  html.dark .leaflet-bar a { background: #232326; color: #e4e4e6; border-color: #46464c; }
+  html.dark .panel { background: rgba(28,28,30,.92); color: #e4e4e6; }
+  html.dark .panel a { color: #8ab4f8; }
+  html.dark .panel .meta { color: #9a9aa0; }
+  html.dark .panel summary:hover { color: #fff; }
+  html.dark .panel details .det { color: #a7a7ad; }
+  html.dark .panel ul, html.dark .legend { border-color: #46464c; }
+  html.dark .legend .sw.fixzone { background: rgba(255,59,48,.18); }
+  html.dark .drones .more { color: #eee; text-shadow: 0 0 2px #000, 0 0 2px #000; }
+  html.dark #ticker { background: rgba(28,28,30,.92); border-color: #46464c; color: #e4e4e6; }
+  html.dark .panel .clearedgrp > summary, html.dark .panel .clearedit { color: #66bb6a; }
+  html.dark .panel .clearedit:hover { color: #a5d6a7; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Опасность БПЛА</h1>
+  <div class="meta">по данным <a href="https://t.me/vrv_radar" target="_blank" rel="noopener">Радар ВРВ</a></div>
+  <div class="meta" id="updated">загрузка…</div>
+  <div class="legend">
+    <div><span class="sw region"></span> опасность по всей области<b id="n-region"></b></div>
+    <div><span class="sw district"></span> опасность в районе / округе<b id="n-district"></b></div>
+    <div><span class="sw fixzone"></span><span class="lbl">только фиксация,<br>опасность не объявлена</span><b id="n-fixzone"></b></div>
+    <div><span class="sw drone" id="drone-sw"></span> фиксация БПЛА<b id="n-uav"></b></div>
+    <div id="stale-row"><span class="sw stale">⏳</span><span class="lbl">без обновлений &gt;100 ч<br>(возможно, пропущен отбой)</span><b id="n-stale"></b></div>
+  </div>
+  <ul id="list"></ul>
+</div>
+<div id="ticker">
+  <button id="followBtn" title="Автослежение: зумить карту к новым событиям"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+  <div class="tickwrap"><div id="tick"></div></div>
+  <button id="themeBtn" title="Светлая/тёмная тема">🌓</button>
+</div>
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/protomaps-leaflet.js"></script>
+<script>
+const map = L.map('map');
+map.fitBounds([[43, 25], [62, 60]]); // европейская часть РФ; после загрузки данных подгонимся под зоны
+map.attributionControl.setPrefix(false);
+map.on('click', () => { // клик по пустому месту: снять выделение / показать все тревоги
+  if (suppressMapClick) { suppressMapClick = false; return; }
+  if (selected) { selected = null; applySelection(); }
+  resetView();
+});
+
+// кнопка «показать всё»: сброс выделения + общий вид
+const HomeCtl = L.Control.extend({
+  options: { position: 'topleft' },
+  onAdd() {
+    const div = L.DomUtil.create('div', 'leaflet-bar');
+    const a = L.DomUtil.create('a', '', div);
+    a.href = '#';
+    a.innerHTML = '⌂';
+    a.title = 'Все зоны (сброс выделения)';
+    L.DomEvent.on(a, 'click', (e) => {
+      L.DomEvent.stop(e);
+      setFollow(false);
+      if (selected) { selected = null; applySelection(); }
+      resetView();
+    });
+    return div;
+  }
+});
+map.addControl(new HomeCtl());
+// подложка — свои векторные тайлы (basemap.pmtiles): подписи name:ru,
+// слой границ выключен, тёмная тема — родным тёмным стилем
+let baseLayer = null;
+function makeBasemap() {
+  if (baseLayer) map.removeLayer(baseLayer);
+  baseLayer = protomapsL.leafletLayer({
+    url: 'basemap.pmtiles',
+    flavor: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+    lang: 'ru',
+    maxDataZoom: 12,
+    maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  });
+  // слой границ выключаем: paintRules — публичное свойство слоя
+  baseLayer.paintRules = baseLayer.paintRules.filter(r => r.dataLayer !== 'boundaries');
+  baseLayer.addTo(map);
+}
+
+let layer = L.featureGroup().addTo(map);
+let fitted = false;
+let allBounds = null;              // рамка всех активных зон — «дефолтный вид»
+let follow = false;                // режим автослежения (кнопка-глаз)
+let lastEvAt = null;
+let lastEvs = [];
+let followIdx = 0;                 // какое событие ленты показываем сейчас
+let activeNames = new Set();       // зоны, видимые на карте сейчас
+let freshClearNames = new Set();   // свежие отбои (<30 мин, есть призрак)
+let lastCities = [];               // активные зоны последнего обновления
+let tickStatic = false;            // лента влезает в экран и не бежит
+
+// в ленте нет видимых событий — летим к самой свежей активной зоне
+function fallbackFollow() {
+  const zs = lastCities.filter(c => c.lat != null);
+  if (!zs.length) return;
+  const c = zs.reduce((a, b) =>
+    new Date(b.fix_at || b.since) > new Date(a.fix_at || a.since) ? b : a);
+  followTo({ at: c.fix_at || c.since, type: c.fix ? 'fix' : 'danger',
+             fix: c.fix, group: c.group, names: [c.name], lat: c.lat, lon: c.lon });
+}
+
+// лента — история; летаем только туда, где сейчас что-то видно
+function evVisible(e) {
+  const n = e.names && e.names[0];
+  if (!n || e.lat == null) return false;
+  if (activeNames.has(n)) return true;
+  return e.type === 'clear' && freshClearNames.has(n);
+}
+const ghostLayer = L.layerGroup().addTo(map); // зелёные «призраки» свежих отбоев
+
+function resetView(floor5) {
+  // floor5 — только для автоподгонки при загрузке («не мельчить»);
+  // явный сброс показывает ВСЕ тревоги целиком, без пола зума
+  if (allBounds && allBounds.isValid()) {
+    map.fitBounds(allBounds.pad(0.05));
+    if (floor5 && map.getZoom() < 5) map.setView(allBounds.getCenter(), 5);
+  }
+}
+
+function setFollow(v) {
+  follow = v;
+  document.getElementById('followBtn').classList.toggle('on', v);
+}
+
+function evLabel(e) {
+  const t = new Date(e.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const what = e.type === 'clear' ? 'Отбой'
+    : e.type === 'danger' ? 'Опасность'
+    : 'Фиксация' + (e.group ? ' группы БПЛА' : e.fix > 1 ? ` ${e.fix} БПЛА` : ' БПЛА');
+  const names = e.names.slice(0, 2).join(', ')
+    + (e.names.length > 2 ? ` +${e.names.length - 2}` : '');
+  return `${t} ${what} — ${names}`;
+}
+
+function followTo(e) {
+  if (e.lat == null) return;
+  map.setView([e.lat, e.lon], e.names[0] && e.names[0].includes('(') ? 9 : 7);
+  const div = document.createElement('div'); // textContent — имена из канала не должны стать HTML
+  div.textContent = evLabel(e);
+  // офсет вверх, чтобы не накрывать стопку дронов в этой же точке
+  L.popup({ offset: [0, -22] }).setLatLng([e.lat, e.lon]).setContent(div).openOn(map);
+}
+const openNames = new Set(); // раскрытые пункты списка переживают автообновление
+const detEls = new Map();    // ключ → элемент <details> текущего списка
+
+let selected = null;         // {level, name, rname} — выбранная зона
+let zoneLayers = [];         // слои карты по зонам для приглушения
+let suppressMapClick = false;
+
+function applySelection() {
+  for (const z of zoneLayers) {
+    const on = !selected
+      || (selected.level === 'region' ? z.rname === selected.rname
+                                      : z.c.name === selected.name);
+    for (const p of z.paths) p.setStyle({ opacity: on ? 1 : .15, fillOpacity: on ? z.fill : .04 });
+    for (const m of z.markers) {
+      const el = m.getElement();
+      if (el) el.style.opacity = on ? '' : '.2';
+    }
+  }
+  for (const [key, el] of detEls) {
+    let on = true;
+    if (selected) {
+      on = selected.level === 'region'
+        ? key === 'R:' + selected.rname || key.endsWith('(' + selected.rname + ')')
+        : key === selected.name || key === 'R:' + selected.rname;
+    }
+    el.classList.toggle('dim', !on);
+  }
+}
+
+function setSelected(sel, toggle) {
+  const same = selected && sel && selected.level === sel.level
+    && selected.rname === sel.rname
+    && (sel.level === 'region' || selected.name === sel.name);
+  selected = (toggle && same) ? null : sel;
+  applySelection();
+  return selected != null;
+}
+
+async function zoomTo(c) {
+  if (c.poly) {
+    const gj = await getPoly(c.poly);
+    if (gj) { map.fitBounds(L.geoJSON(gj).getBounds().pad(0.2)); return; }
+  }
+  if (c.lat != null) map.setView([c.lat, c.lon], 9);
+}
+
+async function zoomToGroup(g) {
+  if (g.region) return zoomTo(g.region);
+  let b = null;
+  for (const d of g.districts) {
+    let db = null;
+    if (d.poly) {
+      const gj = await getPoly(d.poly);
+      if (gj) db = L.geoJSON(gj).getBounds();
+    }
+    if (!db && d.lat != null) db = L.latLngBounds([[d.lat, d.lon], [d.lat, d.lon]]);
+    if (db) b = b ? b.extend(db) : db;
+  }
+  if (b) map.fitBounds(b.pad(0.2));
+}
+
+function focusZone(c, bounds) {
+  suppressMapClick = true;
+  setFollow(false);
+  if (bounds) map.fitBounds(bounds.pad(0.2));
+  else if (c.lat != null) map.setView([c.lat, c.lon], 9);
+  const rname = c.level === 'region' ? c.name : (c.name.match(/\((.+)\)$/) || [])[1];
+  setSelected({ level: c.level, name: c.name, rname });
+  const keys = ['R:' + rname];
+  if (c.level === 'district') keys.push(c.name);
+  for (const key of keys) {
+    openNames.add(key);
+    const el = detEls.get(key);
+    if (el) el.open = true;
+  }
+  const target = detEls.get(keys[keys.length - 1]);
+  if (target) target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+const DRONE_IMG = '<img src="free-icon-uav-8598680.png" alt="БПЛА">';
+document.getElementById('drone-sw').innerHTML = DRONE_IMG;
+
+function droneMarker(c) {
+  if (!c.fix || c.lat == null) return null;
+  const count = c.group ? Math.max(2, c.fix) : c.fix;
+  let html, w;
+  if (count <= 3) { // до трёх — колодой, дальше не читается
+    html = '<div class="drones">' + DRONE_IMG.repeat(count) + '</div>';
+    w = 26 + (count - 1) * 8;
+  } else {          // больше — цифрой: «10 ×🛩»
+    html = '<div class="drones"><span class="more">' + count + '&nbsp;×</span>'
+      + DRONE_IMG + '</div>';
+    w = 26 + 15 + String(count).length * 8;
+  }
+  return L.marker([c.lat, c.lon], {
+    icon: L.divIcon({ html, className: 'drone-div', iconSize: [w, 26], iconAnchor: [w / 2, 13] })
+  });
+}
+const polyCache = {};
+
+async function getPoly(url) {
+  if (!(url in polyCache)) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      polyCache[url] = await r.json();
+    } catch (e) { return null; }
+  }
+  return polyCache[url];
+}
+
+function fmtSince(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('active.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    const cities = data.cities || [];
+    lastCities = cities;
+    activeNames = new Set(cities.map(c => c.name));
+
+    layer.clearLayers();
+    zoneLayers = [];
+    const list = document.getElementById('list');
+    list.innerHTML = '';
+
+    const infoFor = c => {
+      const info = [];
+      if (c.danger) info.push('опасность с ' + fmtSince(c.since));
+      if (c.fix) info.push('фиксация: ' + (c.group ? 'группа БПЛА' : c.fix + ' БПЛА')
+        + (c.fix_at ? ' (' + fmtSince(c.fix_at) + ')' : ''));
+      if (!info.length) info.push('тревога с ' + fmtSince(c.since));
+      return info;
+    };
+
+    for (const c of cities) {
+      const region = c.level === 'region';
+      const popup = `<b>${c.name}</b><br>` + infoFor(c).join('<br>');
+
+      // заливка = объявленная опасность; только фиксация — пунктир
+      const base = region
+        ? { color: '#c25e00', weight: 1.5, fillColor: '#ff9500' }
+        : { color: '#d40000', weight: 1.5, fillColor: '#ff3b30' };
+      const style = c.danger
+        ? { ...base, fillOpacity: region ? .25 : .35 }
+        : { ...base, fillOpacity: .12, dashArray: '4 3' };
+
+      const zrec = {
+        c,
+        rname: region ? c.name : ((c.name.match(/\((.+)\)$/) || [])[1]),
+        paths: [], markers: [], fill: style.fillOpacity
+      };
+      let drawn = false;
+      let zb = null;
+      if (c.poly) {
+        const gj = await getPoly(c.poly);
+        if (gj) {
+          const gl = L.geoJSON(gj, { style }).addTo(layer).bindPopup(popup);
+          zb = gl.getBounds();
+          gl.on('click', () => focusZone(c, zb));
+          zrec.paths.push(gl);
+          drawn = true;
+        }
+      }
+      if (!drawn && c.lat != null && c.lon != null) {
+        const cm = L.circleMarker([c.lat, c.lon], {
+          ...style, weight: 2, fillOpacity: style.fillOpacity + .2, radius: region ? 16 : 9
+        }).addTo(layer).bindPopup(popup).on('click', () => focusZone(c, zb));
+        zrec.paths.push(cm);
+      }
+      const dm = droneMarker(c);
+      if (dm) {
+        dm.addTo(layer).bindPopup(popup).on('click', () => focusZone(c, zb));
+        zrec.markers.push(dm);
+      }
+      zoneLayers.push(zrec);
+
+    }
+
+    // список: области по алфавиту, их районы — внутри
+    detEls.clear();
+    const mkDetails = (key, label) => {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = label;
+      det.appendChild(sum);
+      if (openNames.has(key)) det.open = true;
+      det.addEventListener('toggle', () => {
+        if (det.open) openNames.add(key); else openNames.delete(key);
+      });
+      detEls.set(key, det);
+      return det;
+    };
+    const groups = new Map();
+    for (const c of cities) {
+      const m = c.name.match(/\((.+)\)$/);
+      const rname = c.level === 'region' ? c.name : (m ? m[1] : 'Прочее');
+      if (!groups.has(rname)) groups.set(rname, { region: null, districts: [] });
+      if (c.level === 'region') groups.get(rname).region = c;
+      else groups.get(rname).districts.push(c);
+    }
+    // ⏳ — тревога без событий дольше исторического максимума (100 ч по
+    // анализу канала за 2 недели): скорее всего, отбой не публиковался
+    const STALE_MS = 100 * 3600e3;
+    const isStale = c => c && Date.now() - new Date(c.fix_at || c.since) > STALE_MS;
+    const markStale = (det, c) => {
+      if (!isStale(c)) return;
+      const s = document.createElement('span');
+      s.className = 'staleic';
+      s.textContent = ' ⏳';
+      s.title = 'без обновлений дольше 100 часов (возможно, пропущен отбой)';
+      det.querySelector('summary').appendChild(s);
+    };
+    // отбои — первой секцией: тревог может быть много, а отбои есть всегда
+    const clearedArr = data.cleared || [];
+    freshClearNames = new Set(clearedArr
+      .filter(z => Date.now() - new Date(z.at) < 30 * 60e3).map(z => z.name));
+    ghostLayer.clearLayers();
+    if (clearedArr.length) {
+      const li = document.createElement('li');
+      const det = mkDetails('CLEARED', `Отбои (${clearedArr.length})`);
+      det.className = 'clearedgrp';
+      const sub = document.createElement('ul');
+      sub.className = 'sub';
+      for (const z of clearedArr) {
+        const t = new Date(z.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        let dur = '';
+        if (z.since) {
+          const h = (new Date(z.at) - new Date(z.since)) / 3600e3;
+          dur = h >= 1 ? `, шла ${h.toFixed(h < 10 ? 1 : 0)} ч` : `, шла ${Math.round(h * 60)} мин`;
+        }
+        const zli = document.createElement('li');
+        zli.className = 'clearedit';
+        zli.textContent = `✓ ${z.name} — отбой ${t}${dur}`;
+        if (z.lat != null) {
+          zli.addEventListener('click',
+            () => map.setView([z.lat, z.lon], z.level === 'region' ? 7 : 9));
+        }
+        sub.appendChild(zli);
+        if (z.poly && Date.now() - new Date(z.at) < 30 * 60e3) {
+          getPoly(z.poly).then(gj => {
+            if (gj) L.geoJSON(gj, {
+              style: { color: '#2e7d32', weight: 1.5, dashArray: '3 3',
+                       fillColor: '#43a047', fillOpacity: .15 }
+            }).addTo(ghostLayer).bindPopup(`<b>${z.name}</b><br>отбой в ${t}`);
+          });
+        }
+      }
+      det.appendChild(sub);
+      li.appendChild(det);
+      list.appendChild(li);
+    }
+
+    for (const rname of [...groups.keys()].sort((a, b) => a.localeCompare(b, 'ru'))) {
+      const g = groups.get(rname);
+      g.districts.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+      const li = document.createElement('li');
+      const det = mkDetails('R:' + rname,
+        rname + (g.districts.length ? ` (${g.districts.length})` : ''));
+      det.className = 'rgroup';
+      det.querySelector('summary').addEventListener('click', (e) => {
+        e.preventDefault(); // раскрытием управляет выделение, не нативный toggle
+        setFollow(false);
+        const now = setSelected({ level: 'region', name: rname, rname }, true);
+        det.open = now;
+        if (now) zoomToGroup(g); else resetView();
+      });
+      markStale(det, g.region);
+      if (g.region) {
+        const dd = document.createElement('div');
+        dd.className = 'det';
+        dd.innerHTML = infoFor(g.region).join('<br>');
+        det.appendChild(dd);
+      }
+      if (g.districts.length) {
+        const sub = document.createElement('ul');
+        sub.className = 'sub';
+        for (const d of g.districts) {
+          const dli = document.createElement('li');
+          const ddet = mkDetails(d.name, d.name.replace(/\s*\(.+\)$/, ''));
+          ddet.querySelector('summary').addEventListener('click', (e) => {
+            e.preventDefault();
+            setFollow(false);
+            const now = setSelected({ level: 'district', name: d.name, rname }, true);
+            ddet.open = now;
+            if (now) zoomTo(d); else resetView();
+          });
+          markStale(ddet, d);
+          const dd = document.createElement('div');
+          dd.className = 'det';
+          dd.innerHTML = infoFor(d).join('<br>');
+          ddet.appendChild(dd);
+          dli.appendChild(ddet);
+          sub.appendChild(dli);
+        }
+        det.appendChild(sub);
+      }
+      li.appendChild(det);
+      list.appendChild(li);
+    }
+
+    if (!cities.length) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = 'тревог нет';
+      list.appendChild(li);
+    }
+
+    // бегущая строка: только живые события — зона активна или свежий отбой;
+    // если таких нет, крутим статусы текущих тревог
+    lastEvs = (data.events || []).slice(0, 10).filter(evVisible);
+    if (!lastEvs.length) {
+      lastEvs = cities.filter(c => c.lat != null)
+        .map(c => ({ at: c.fix_at || c.since, type: c.fix ? 'fix' : 'danger',
+                     fix: c.fix, group: c.group, names: [c.name],
+                     lat: c.lat, lon: c.lon }))
+        .sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 10);
+    }
+    const tickEl = document.getElementById('tick');
+    tickEl.textContent = '';
+    if (lastEvs.length) {
+      const addItems = () => {
+        for (const e of lastEvs) {
+          const s = document.createElement('span');
+          s.className = 'tickitem';
+          s.textContent = evLabel(e);
+          tickEl.appendChild(s);
+        }
+      };
+      addItems();
+      if (tickEl.scrollWidth <= tickEl.parentElement.clientWidth) {
+        tickStatic = true;              // помещается — стоим
+        tickEl.style.animation = 'none';
+      } else {
+        tickStatic = false;
+        addItems();                     // вторая копия — бесшовный цикл
+        tickEl.style.animation = '';
+        tickEl.style.animationDuration =
+          Math.max(30, Math.round(tickEl.scrollWidth / 2 / 35)) + 's'; // ~35 px/с
+      }
+    }
+    if (follow && lastEvs.length && lastEvs[0].at !== lastEvAt) {
+      lastEvAt = lastEvs[0].at; // свежее событие перебивает очередь
+      followIdx = 0;
+      if (evVisible(lastEvs[0])) followTo(lastEvs[0]);
+    }
+    const nUav = cities.reduce((s, c) => s + (c.fix || 0), 0);
+    const counts = {
+      'n-region': cities.filter(c => c.level === 'region' && c.danger).length,
+      'n-district': cities.filter(c => c.level === 'district' && c.danger).length,
+      'n-fixzone': cities.filter(c => !c.danger).length,
+      'n-uav': nUav ? (cities.some(c => c.group) ? '≥' + nUav : nUav) : 0,
+      'n-stale': cities.filter(isStale).length
+    };
+    for (const [id, v] of Object.entries(counts))
+      document.getElementById(id).textContent = String(v); // 0 показываем явно
+    // строка ⏳ видна только когда такие зоны есть
+    document.getElementById('stale-row').style.display = counts['n-stale'] ? '' : 'none';
+    // если выбранная зона исчезла (отбой) — снять выделение, затем применить
+    if (selected && !zoneLayers.some(z => selected.level === 'region'
+        ? z.rname === selected.rname : z.c.name === selected.name)) {
+      selected = null;
+    }
+    applySelection();
+
+    allBounds = layer.getBounds();
+    if (!fitted && cities.length && allBounds.isValid()) {
+      resetView(true); // стартовая подгонка с полом зума 5 — не мельчить
+      fitted = true;
+    }
+    const upd = data.updated ? new Date(data.updated) : new Date();
+    document.getElementById('updated').textContent = 'обновлено: ' + upd.toLocaleString('ru-RU',
+      { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    document.getElementById('updated').textContent = 'ошибка загрузки данных';
+  }
+}
+
+// тема: сохранённый выбор, иначе системная настройка
+if ((localStorage.getItem('theme')
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) === 'dark') {
+  document.documentElement.classList.add('dark');
+}
+makeBasemap(); // подложка создаётся после установки темы
+document.getElementById('themeBtn').addEventListener('click', () => {
+  const dark = document.documentElement.classList.toggle('dark');
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+  makeBasemap(); // перерисовать подложку в новом стиле
+});
+
+document.getElementById('followBtn').addEventListener('click', () => {
+  setFollow(!follow);
+  if (follow && lastEvs.length) {
+    lastEvAt = lastEvs[0].at;
+    followIdx = 0;
+    const first = lastEvs.findIndex(evVisible);
+    if (first >= 0) {
+      followIdx = first;
+      followTo(lastEvs[first]);
+    } else {
+      fallbackFollow();
+    }
+  }
+});
+
+// перелистывание карусели на следующее ВИДИМОЕ событие
+function followAdvance() {
+  if (!follow || !lastEvs.length) return;
+  for (let step = 1; step <= lastEvs.length; step++) {
+    const i = (followIdx + step) % lastEvs.length;
+    if (evVisible(lastEvs[i])) {
+      followIdx = i;
+      followTo(lastEvs[i]);
+      return;
+    }
+  }
+}
+// строка бежит — по кругу анимации; стоит (всё влезло) — по таймеру
+document.getElementById('tick').addEventListener('animationiteration', followAdvance);
+setInterval(() => { if (tickStatic) followAdvance(); }, 30000);
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
